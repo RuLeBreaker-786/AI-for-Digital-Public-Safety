@@ -5,3 +5,5 @@ pillow
 pytesseract
 requests
 python-multipart
+streamlit
+streamlit-folium
