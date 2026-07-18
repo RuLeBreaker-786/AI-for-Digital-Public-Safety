@@ -1,10 +1,11 @@
+import os
 import streamlit as st
 import requests
 import pandas as pd
 import folium
 from streamlit_folium import st_folium
 
-API_URL = "http://127.0.0.1:8000"
+API_URL = os.getenv("API_URL", "http://127.0.0.1:8000")
 
 
 def render_heatmap_module():
