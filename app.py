@@ -2,7 +2,6 @@
 import os
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from ultralytics import YOLO
 
 from modules.currency import classify_counterfeit
 from modules.digital_arrest_scam import scan_for_scam
@@ -38,7 +37,16 @@ def find_model_path() -> str:
         "Model asset not found. Please place best.pt or best.onnx in the repository root."
     )
 
-model = YOLO(find_model_path(), task="classify")
+model = None
+
+
+def get_model():
+    global model
+    if model is None:
+        from ultralytics import YOLO
+
+        model = YOLO(find_model_path(), task="classify")
+    return model
 
 
 @app.get("/")
@@ -55,7 +63,7 @@ async def predict_currency(file: UploadFile = File(...)):
     if file.content_type not in {"image/jpeg", "image/jpg", "image/png", "image/webp"}:
         raise HTTPException(status_code=400, detail="Upload must be an image file.")
     image_bytes = await file.read()
-    return classify_counterfeit(image_bytes, model)
+    return classify_counterfeit(image_bytes, get_model())
 
 
 @app.post("/predict/scam")
