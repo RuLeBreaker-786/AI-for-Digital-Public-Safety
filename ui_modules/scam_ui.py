@@ -11,7 +11,7 @@ def render_scam_module():
     if st.button("Analyze Scam Text"):
         if scam_text.strip():
             try:
-                resp = requests.post(f"{API_URL}/predict/scam", data={"message": scam_text}, timeout=30)
+                resp = requests.post(f"{API_URL}/predict/scam", data={"message": scam_text}, timeout=120)
                 if resp.status_code == 200:
                     data = resp.json()
                     st.write(data)
