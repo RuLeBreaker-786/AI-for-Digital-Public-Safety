@@ -1,10 +1,13 @@
 
+import os
 import streamlit as st
 from ui_modules.currency_ui import render_currency_module
 from ui_modules.scam_ui import render_scam_module
 from ui_modules.citizen_threat_shield_ui import render_threat_module
 from ui_modules.heatmap_ui import render_heatmap_module
 from ui_modules.fraud_graph_ui import render_fraud_graph_module
+
+API_URL = os.getenv("API_URL", "http://127.0.0.1:8000")
 
 st.set_page_config(page_title="Fraud Detection Agent", page_icon="🛡️", layout="wide")
 
