@@ -1,44 +1,34 @@
 import io
 import re
+import ast
 from typing import Optional
 
 import numpy as np
 from PIL import Image, ImageOps
-from ultralytics import YOLO
 import pytesseract
 from pytesseract import TesseractNotFoundError
 
-# Use regex word boundaries (\b) to prevent partial matches from triggering toy-note filters
 FAKE_TEXT_BLACKLIST = [r"\bmanoranjan\b", r"\bchildren\b", r"\bfun\b", r"\bchuran\b", r"\bcoupon\b", r"\bpoints\b", r"\bschool\b"]
 VALID_DENOMINATIONS = {10, 20, 50, 100, 200, 500, 2000}
 
-
-def normalize_probs(result) -> np.ndarray:
-    probs = result.probs
-    if hasattr(probs, "top1") and hasattr(probs, "top1conf"):
-        top1 = probs.top1
-        top1conf = probs.top1conf
-        class_id = int(top1.item()) if hasattr(top1, "item") else int(top1)
-        confidence = float(top1conf.item()) if hasattr(top1conf, "item") else float(top1conf)
-        arr = np.zeros(len(result.names), dtype=float)
-        if 0 <= class_id < len(arr):
-            arr[class_id] = confidence
-        return arr
-
-    if hasattr(probs, "data") and hasattr(probs.data, "numpy"):
-        return probs.data.numpy()
-    if hasattr(probs, "cpu"):
-        return probs.cpu().numpy()
-    return np.asarray(probs)
-
-
-def get_top_prediction(result) -> tuple[str, float]:
-    probs_arr = normalize_probs(result)
-    class_id = int(np.argmax(probs_arr))
-    confidence = float(probs_arr[class_id])
-    class_name = result.names[class_id]
-    return class_name, confidence
-
+def preprocess_image(image: Image.Image, imgsz=640) -> np.ndarray:
+    # Resize keeping aspect ratio, then center crop (YOLOv8 standard classification transform)
+    width, height = image.size
+    scale = imgsz / min(width, height)
+    new_w, new_h = int(width * scale), int(height * scale)
+    
+    # Use standard resampling (fixes compatibility with older PIL versions)
+    img_resized = image.resize((new_w, new_h), Image.BILINEAR)
+    
+    left = (new_w - imgsz) / 2
+    top = (new_h - imgsz) / 2
+    img_cropped = img_resized.crop((left, top, left + imgsz, top + imgsz))
+    
+    # Convert to numpy, normalize to 0-1, and change from HWC to CHW format
+    img_arr = np.array(img_cropped, dtype=np.float32) / 255.0
+    img_arr = img_arr.transpose(2, 0, 1)
+    img_arr = np.expand_dims(img_arr, axis=0)
+    return img_arr
 
 def extract_ocr_denomination(image: Image.Image) -> Optional[int]:
     try:
@@ -46,8 +36,7 @@ def extract_ocr_denomination(image: Image.Image) -> Optional[int]:
     except (TesseractNotFoundError, Exception):
         return None
 
-    raw_text = raw_text.replace("₹", " ")
-    raw_text = raw_text.replace("rs", " ")
+    raw_text = raw_text.replace("₹", " ").replace("rs", " ")
     raw_text = re.sub(r"[^0-9a-z\s]", " ", raw_text)
 
     match = re.search(r"\b(10|20|50|100|200|500|2000)\b", raw_text)
@@ -56,27 +45,35 @@ def extract_ocr_denomination(image: Image.Image) -> Optional[int]:
         return value if value in VALID_DENOMINATIONS else None
 
     text_map = {
-        r"\bten\b": 10,
-        r"\btwenty\b": 20,
-        r"\bfifty\b": 50,
-        r"\bhundred\b": 100,
-        r"\btwo hundred\b": 200,
-        r"\bfive hundred\b": 500,
-        r"\btwo thousand\b": 2000,
+        r"\bten\b": 10, r"\btwenty\b": 20, r"\bfifty\b": 50,
+        r"\bhundred\b": 100, r"\btwo hundred\b": 200,
+        r"\bfive hundred\b": 500, r"\btwo thousand\b": 2000,
     }
     for pattern, value in text_map.items():
         if re.search(pattern, raw_text):
             return value
     return None
 
-
-def classify_counterfeit(image_bytes: bytes, model: YOLO) -> dict:
+def classify_counterfeit(image_bytes: bytes, session) -> dict:
     raw_image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
     image = ImageOps.exif_transpose(raw_image)
 
-    results = model.predict(image, imgsz=640, device="cpu", verbose=False)
-    result = results[0]
-    raw_class, confidence = get_top_prediction(result)
+    # 1. Preprocess image
+    input_data = preprocess_image(image, imgsz=640)
+    
+    # 2. Run ONNX Inference
+    input_name = session.get_inputs()[0].name
+    output_name = session.get_outputs()[0].name
+    probs_arr = session.run([output_name], {input_name: input_data})[0][0]
+
+    # 3. Extract class names embedded in the ONNX metadata
+    meta = session.get_modelmeta().custom_metadata_map
+    names_dict = ast.literal_eval(meta.get('names', '{}'))
+
+    # 4. Determine Top Prediction
+    class_id = int(np.argmax(probs_arr))
+    confidence = float(probs_arr[class_id])
+    raw_class = names_dict.get(class_id, f"class_{class_id}")
 
     if "_" in raw_class:
         denom, status = raw_class.split("_", 1)
@@ -86,65 +83,21 @@ def classify_counterfeit(image_bytes: bytes, model: YOLO) -> dict:
     predicted_denom = int(denom) if denom.isdigit() else None
     final_status = "LEGITIMATE" if status.lower() == "real" else "COUNTERFEIT"
     override_warning: Optional[str] = None
-    ocr_denomination: Optional[int] = None
 
     if confidence < 0.65:
         final_status = "UNCERTAIN"
         override_warning = "Low AI confidence. Ensure the note image is clear, well-lit, and fully visible."
 
+    # Verify with OCR
     ocr_denomination = extract_ocr_denomination(image)
     if ocr_denomination and predicted_denom and ocr_denomination != predicted_denom:
         if confidence < 0.90:
             final_status = "UNCERTAIN"
-            override_warning = (
-                f"OCR detected a different denomination (₹{ocr_denomination}) than the model's prediction (₹{predicted_denom}). "
-                "Please verify the note under better lighting."
-            )
+            override_warning = f"OCR detected a different denomination (₹{ocr_denomination}) than the model's prediction (₹{predicted_denom}). Please verify."
         else:
-            override_warning = (
-                f"OCR detected ₹{ocr_denomination}, while the model predicted ₹{predicted_denom}. Verification is recommended."
-            )
+            override_warning = f"OCR detected ₹{ocr_denomination}, while the model predicted ₹{predicted_denom}. Verification recommended."
 
-    try:
-        probs_arr = normalize_probs(result)
-    except Exception:
-        probs_arr = None
-
-    if probs_arr is not None and predicted_denom is not None:
-        names = result.names
-        if isinstance(names, dict):
-            name_to_prob = {v: float(probs_arr[k]) for k, v in names.items() if k < len(probs_arr)}
-        else:
-            name_to_prob = {v: float(probs_arr[i]) for i, v in enumerate(names)}
-
-        fake_key = f"{predicted_denom}_fake"
-        real_key = f"{predicted_denom}_real"
-        fake_prob = name_to_prob.get(fake_key, 0.0)
-        real_prob = name_to_prob.get(real_key, 0.0)
-
-        if fake_prob > real_prob + 0.10:
-            final_status = "COUNTERFEIT"
-            override_warning = (
-                "The model detected a significantly higher fake probability for the predicted denomination. Please inspect the note carefully."
-            )
-            confidence = max(confidence, fake_prob)
-
-        if ocr_denomination:
-            ocr_candidates = [
-                (name, prob) for name, prob in name_to_prob.items() if name.startswith(f"{ocr_denomination}_")
-            ]
-            if ocr_candidates:
-                best_name, best_prob = max(ocr_candidates, key=lambda x: x[1])
-                if best_prob >= 0.35 and best_prob >= confidence - 0.15:
-                    if best_name != raw_class:
-                        denom, status = best_name.split("_", 1)
-                        predicted_denom = ocr_denomination
-                        final_status = "LEGITIMATE" if status.lower() == "real" else "COUNTERFEIT"
-                        confidence = max(confidence, best_prob)
-                        override_warning = (
-                            f"OCR denomination ₹{ocr_denomination} aligned with the model's best match {best_name}. Prediction updated for better accuracy."
-                        )
-
+    # OCR Toy-Note Filter
     if final_status in ["LEGITIMATE", "UNCERTAIN"]:
         try:
             extracted_text = pytesseract.image_to_string(image).lower()
@@ -152,14 +105,10 @@ def classify_counterfeit(image_bytes: bytes, model: YOLO) -> dict:
                 if re.search(pattern, extracted_text):
                     final_status = "COUNTERFEIT"
                     override_warning = "OCR security override: suspicious toy-note text detected."
-                    confidence = max(confidence, 0.99)
+                    confidence = 0.99
                     break
-        except TesseractNotFoundError:
-            if not override_warning:
-                override_warning = "OCR unavailable. Classification is based on visual model output only."
         except Exception:
-            if not override_warning:
-                override_warning = "OCR processing failed. Classification is based on visual model output only."
+            pass
 
     display_denom = f"₹{predicted_denom}" if predicted_denom else (f"₹{ocr_denomination}" if ocr_denomination else "Unknown")
 
