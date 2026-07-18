@@ -49,6 +49,7 @@ def get_model():
     return model
 
 
+@app.head("/")
 @app.get("/")
 async def root():
     return {
