@@ -15,7 +15,7 @@ def render_currency_module():
         
         with st.spinner("Analyzing currency image..."):
             try:
-                resp = requests.post(f"{API_URL}/predict/currency", files=files, timeout=30)
+                resp = requests.post(f"{API_URL}/predict/currency", files=files, timeout=120)
                 if resp.status_code == 200:
                     data = resp.json()
 
