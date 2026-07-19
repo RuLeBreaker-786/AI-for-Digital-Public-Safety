@@ -1,7 +1,7 @@
 import os
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-import onnxruntime as ort
+from ultralytics import YOLO
 
 from modules.currency import classify_counterfeit
 from modules.digital_arrest_scam import scan_for_scam
@@ -10,8 +10,7 @@ from modules.heatmap import generate_heatmap_data
 from modules.fraud_graph import analyze_fraud_graph
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-# Force it to specifically look for the ONNX file
-MODEL_PATH = os.path.join(BASE_DIR, "best.onnx")
+MODEL_PATH = os.path.join(BASE_DIR, "best.pt")
 
 app = FastAPI(
     title="Fraud Detection Agent",
@@ -26,23 +25,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-session = None
-
-def get_session():
-    global session
-    if session is None:
-        if not os.path.exists(MODEL_PATH):
-            raise FileNotFoundError(f"Missing model asset: {MODEL_PATH}")
-        # Initialize the lightweight ONNX runtime
-        session = ort.InferenceSession(MODEL_PATH, providers=['CPUExecutionProvider'])
-    return session
+# Load natively at startup - Docker manages this baseline footprint perfectly
+if not os.path.exists(MODEL_PATH):
+    raise FileNotFoundError(f"Missing model asset: {MODEL_PATH}")
+model = YOLO(MODEL_PATH, task="classify")
 
 @app.head("/")
 @app.get("/")
 async def root():
     return {
         "status": "Online",
-        "engine": "Unified Fraud Detection Agent (ONNX Accelerated)",
+        "engine": "Unified Fraud Detection Agent (PyTorch Native)",
     }
 
 @app.post("/predict/currency")
@@ -50,7 +43,7 @@ async def predict_currency(file: UploadFile = File(...)):
     if file.content_type not in {"image/jpeg", "image/jpg", "image/png", "image/webp"}:
         raise HTTPException(status_code=400, detail="Upload must be an image file.")
     image_bytes = await file.read()
-    return classify_counterfeit(image_bytes, get_session())
+    return classify_counterfeit(image_bytes, model)
 
 @app.post("/predict/scam")
 async def predict_scam(message: str = Form(...)):
