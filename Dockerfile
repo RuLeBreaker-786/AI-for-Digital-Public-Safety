@@ -1,14 +1,9 @@
 # Use a lightweight Python Linux image
 FROM python:3.11-slim
 
-# Install the actual Tesseract OCR engine and REQUIRED OpenCV graphics libraries
+# Install ONLY the required Tesseract OCR engine
 RUN apt-get update && apt-get install -y \
     tesseract-ocr \
-    libglib2.0-0 \
-    libsm6 \
-    libxext6 \
-    libxrender-dev \
-    libgl1 \
     && rm -rf /var/lib/apt/lists/*
 
 # Set up the working directory
