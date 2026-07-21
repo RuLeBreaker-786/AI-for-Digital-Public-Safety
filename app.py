@@ -78,5 +78,5 @@ async def report_heatmap_incident(
     return add_hotspot_incident(location, state, incident_type, severity, lat, lon, notes)
 
 @app.get("/insights/fraud-graph")
-async def insights_fraud_graph():
-    return analyze_fraud_graph()
+async def insights_fraud_graph(campaign: str = "digital_arrest", role: str = "All"):
+    return analyze_fraud_graph(campaign_key=campaign, role_filter=role)
