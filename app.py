@@ -62,8 +62,8 @@ async def predict_threat(
     return citizen_threat_shield(channel, region, description)
 
 @app.get("/insights/heatmap")
-async def insights_heatmap(state: str = "All", severity: str = "All"):
-    return generate_heatmap_data(state_filter=state, severity_filter=severity)
+async def insights_heatmap(state: str = "All", severity: str = "All", incident_type: str = "All"):
+    return generate_heatmap_data(state_filter=state, severity_filter=severity, incident_type_filter=incident_type)
 
 @app.post("/insights/heatmap/report")
 async def report_heatmap_incident(
